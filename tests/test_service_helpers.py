@@ -122,6 +122,18 @@ def test_contact_search_does_not_require_provider_person_name_filter():
     assert _search_title("Senior Software Engineer at Stripe", ["Engineer"]) == "Engineer"
 
 
+def test_forager_role_row_can_be_used_as_person_record():
+    row = {
+        "id": 123,
+        "full_name": "Example Person",
+        "role_title": "Engineer",
+        "organization": {"name": "Example", "domain": "example.com"},
+    }
+    person = row.get("person", row)
+    assert person["id"] == 123
+    assert person["full_name"] == "Example Person"
+
+
 def test_company_matching_rejects_ambiguous_results():
     candidates = [
         {

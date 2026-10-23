@@ -265,7 +265,7 @@ class EnrichmentService:
         for result in results:
             if not isinstance(result, dict):
                 continue
-            person = _as_dict(result.get("person"))
+            person = _as_dict(result.get("person", result))
             organization = _as_dict(result.get("organization"))
             person_id = person.get("id") or result.get("person_id")
             linkedin_url = _linkedin_url({}, person)
@@ -454,7 +454,7 @@ class EnrichmentService:
             for result in results:
                 if not isinstance(result, dict):
                     continue
-                person = _as_dict(result.get("person"))
+                person = _as_dict(result.get("person", result))
                 found_name = str(_first(person, "full_name", "name") or "").strip().casefold()
                 if found_name != wanted_name:
                     continue
