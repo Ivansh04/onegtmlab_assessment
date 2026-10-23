@@ -1,0 +1,47 @@
+{
+  "uid": "onegtmlab_assessment_webhooks",
+  "type": "webhooks",
+  "config": {
+    "settings": {
+      "targetUrl": "https://onegtmlab-assessment.onrender.com/webhooks/hubspot",
+      "maxConcurrentRequests": 10
+    },
+    "subscriptions": {
+      "crmObjects": [
+        {
+          "subscriptionType": "object.creation",
+          "objectType": "company",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.creation",
+          "objectType": "contact",
+          "active": true
+        },
+        {
+          "subscriptionType": "object.propertyChange",
+          "objectType": "contact",
+          "propertyName": "firstname",
+          "active": false
+        }
+      ],
+      "legacyCrmObjects": [
+        {
+          "subscriptionType": "contact.propertyChange",
+          "propertyName": "lastname",
+          "active": false
+        },
+        {
+          "subscriptionType": "contact.deletion",
+          "active": false
+        }
+      ],
+      "hubEvents": [
+        {
+          "subscriptionType": "contact.privacyDeletion",
+          "active": false
+        }
+      ]
+    }
+  }
+}

@@ -62,16 +62,35 @@ class ForagerClient:
                 raise ForagerError("Forager returned invalid JSON") from exc
         except ForagerCreditsExhausted:
             raise
+
         except httpx.HTTPStatusError as exc:
-            # Avoid logging response bodies because they may contain personal data.
+         # Extract validation errors for debugging without logging the full response.
+            detail = ""
+            try:
+                body = exc.response.json()
+                if isinstance(body, dict):
+                    detail = str(body.get("message") or body.get("detail") or "")
+                    if not detail:
+                        errors = {
+                            key: value
+                            for key, value in body.items()
+                            if key in {"role_title", "person_name", "organization_domains"}
+                        }
+                        detail = str(errors) if errors else ""
+            except ValueError:
+                pass
+
             logger.warning(
-                "Forager API returned HTTP %s endpoint=%s",
+                "Forager API returned HTTP %s endpoint=%s detail=%s",
                 exc.response.status_code,
                 path,
+                detail[:500],
             )
             raise ForagerError(
                 f"Forager API error ({exc.response.status_code})"
+                + (f": {detail[:500]}" if detail else "")
             ) from exc
+
         except httpx.HTTPError as exc:
             raise ForagerError(
                 f"Forager request failed: {type(exc).__name__}"
