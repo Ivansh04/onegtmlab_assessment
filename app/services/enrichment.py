@@ -59,6 +59,15 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _person_name(person: dict[str, Any]) -> str:
+    full_name = _first(person, "full_name", "name")
+    if full_name:
+        return str(full_name).strip()
+    first = _first(person, "first_name", "firstname")
+    last = _first(person, "last_name", "lastname")
+    return " ".join(str(part).strip() for part in (first, last) if part).strip()
+
+
 def _current_role(details: dict[str, Any]) -> dict[str, Any]:
     direct = details.get("current_role")
     if isinstance(direct, dict):
@@ -451,26 +460,39 @@ class EnrichmentService:
                 company_domain=company_domain,
             )
             wanted_name = f"{first} {last}".strip().casefold()
+            matching_rows = 0
+            resolvable_rows = 0
             for result in results:
                 if not isinstance(result, dict):
                     continue
                 person = _as_dict(result.get("person", result))
-                found_name = str(_first(person, "full_name", "name") or "").strip().casefold()
+                found_name = _person_name(person).casefold()
                 if found_name != wanted_name:
                     continue
-                found_org = _as_dict(result.get("organization"))
+                matching_rows += 1
+                found_org = _as_dict(person.get("organization")) or _as_dict(result.get("organization"))
                 found_domain = _domain(_first(found_org, "domain", "website"))
                 if company_domain and found_domain and found_domain != company_domain:
                     continue
-                person_id = person.get("id")
+                person_id = person.get("id") or person.get("person_id") or result.get("person_id")
                 profile_url = _linkedin_url({}, person)
                 profile_identifier = _linkedin_identifier(profile_url)
                 if person_id or profile_identifier:
+                    resolvable_rows += 1
                     details = await self.forager.person_details(
                         person_id=int(person_id) if person_id is not None else None,
                         linkedin_identifier=profile_identifier,
                     )
                 break
+            logger.info(
+                "Forager contact match results contact_id=%s search_results=%d "
+                "matching_name=%d resolvable=%d details=%s",
+                contact_id,
+                len(results),
+                matching_rows,
+                resolvable_rows,
+                bool(details),
+            )
 
         if not details:
             raise ForagerError("Forager returned no person detail match")
