@@ -1,4 +1,4 @@
-from app.services.enrichment import _domain, _linkedin_identifier, EnrichmentService
+from app.services.enrichment import _domain, _linkedin_identifier, EnrichmentService, _search_title
 from app.clients.hubspot import HubSpotClient
 from app.config import Settings
 
@@ -67,6 +67,17 @@ def test_company_matching_rejects_wrong_domain():
     )
 
     assert result is None
+
+
+def test_search_title_uses_supported_token_for_freeform_contact_title():
+    assert _search_title(
+        "Senior Software Engineer at Stripe",
+        ["Engineer", "CEO"],
+    ) == "Engineer"
+
+
+def test_search_title_preserves_supported_exact_title():
+    assert _search_title("CEO", ["Engineer", "CEO"]) == "CEO"
 
 
 def test_company_matching_rejects_ambiguous_results():

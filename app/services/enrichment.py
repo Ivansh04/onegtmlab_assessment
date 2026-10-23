@@ -68,6 +68,22 @@ def _current_role(details: dict[str, Any]) -> dict[str, Any]:
     return current or (roles[0] if roles else {})
 
 
+def _search_title(contact_title: str | None, allowed_titles: list[str]) -> str | None:
+    """Choose a provider-supported title token for a name-targeted search."""
+    if not allowed_titles:
+        return None
+    normalized_contact_title = (contact_title or "").casefold()
+    for title in allowed_titles:
+        normalized_title = title.strip()
+        if normalized_title and normalized_contact_title == normalized_title.casefold():
+            return normalized_title
+    for title in allowed_titles:
+        normalized_title = title.strip()
+        if normalized_title and normalized_title.casefold() in normalized_contact_title:
+            return normalized_title
+    return next((title.strip() for title in allowed_titles if title.strip()), None)
+
+
 class EnrichmentService:
     """Credit-conscious HubSpot enrichment.
 
@@ -127,8 +143,7 @@ class EnrichmentService:
         elif domain and not any("credits exhausted" in warning for warning in warnings):
             warnings.append("Forager returned no company candidates")
 
-        # Existing associated contacts are only enriched by direct LinkedIn URL.
-        # This avoids a role-search call for every contact on a company webhook.
+        # Existing contacts are enriched independently of the discovery limit.
         try:
             contacts = await self.hubspot.contacts_for_company(company_id)
         except HubSpotError:
@@ -141,11 +156,8 @@ class EnrichmentService:
             if not contact_id:
                 continue
             try:
-                current = await self.hubspot.get_contact(contact_id)
-                contact_props = current.get("properties", {}) or {}
-                if _linkedin_identifier(contact_props.get("hs_linkedin_url")):
-                    await self.enrich_contact(contact_id)
-                    enriched += 1
+                await self.enrich_contact(contact_id)
+                enriched += 1
             except ForagerCreditsExhausted:
                 warnings.append(
                     f"Forager credits exhausted while enriching associated contact {contact_id}"
@@ -426,7 +438,7 @@ class EnrichmentService:
             if not (first and last and company_name):
                 raise ValueError("Contact needs LinkedIn URL or first name, last name, and company")
             titles = list(self.settings.job_title_terms)
-            title = props.get("jobtitle") or (titles[0] if titles else None)
+            title = _search_title(props.get("jobtitle"), titles)
             if not title:
                 raise ValueError("No job title available for a targeted Forager search")
             company_domain = None
