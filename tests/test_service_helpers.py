@@ -1,5 +1,10 @@
+import json
+import httpx
+import pytest
+
 from app.services.enrichment import _domain, _linkedin_identifier, EnrichmentService, _search_title
 from app.clients.hubspot import HubSpotClient
+from app.clients.forager import ForagerClient
 from app.config import Settings
 
 def test_domain_normalization():
@@ -78,6 +83,37 @@ def test_search_title_uses_supported_token_for_freeform_contact_title():
 
 def test_search_title_preserves_supported_exact_title():
     assert _search_title("CEO", ["Engineer", "CEO"]) == "CEO"
+
+
+@pytest.mark.asyncio
+async def test_name_targeted_search_omits_rejected_role_title_filter():
+    captured: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"search_results": []})
+
+    settings = Settings(
+        forager_api_key="test-key",
+        forager_account_id="test-account",
+    )
+    client = ForagerClient(settings)
+    await client.client.aclose()
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        await client.search_people(
+            "Example",
+            None,
+            company_domain="example.com",
+        )
+    finally:
+        await client.close()
+
+    assert captured == {
+        "page": 1,
+        "role_is_current": True,
+        "organization_domains": ["example.com"],
+    }
 
 
 def test_contact_search_does_not_require_provider_person_name_filter():

@@ -116,20 +116,19 @@ class ForagerClient:
     async def search_people(
         self,
         company_name: str,
-        job_title: str,
+        job_title: str | None,
         page: int = 1,
         company_domain: str | None = None,
         person_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search current roles once using documented filters."""
         del company_name  # Forager filters by domain, not a free-text company name.
-        if not job_title or not job_title.strip():
-            return []
         payload: dict[str, Any] = {
             "page": page,
-            "role_title": job_title.strip(),
             "role_is_current": True,
         }
+        if job_title and job_title.strip():
+            payload["role_title"] = job_title.strip()
         if company_domain:
             payload["organization_domains"] = [company_domain]
         if person_name:

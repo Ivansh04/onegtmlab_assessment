@@ -437,10 +437,6 @@ class EnrichmentService:
         else:
             if not (first and last and company_name):
                 raise ValueError("Contact needs LinkedIn URL or first name, last name, and company")
-            titles = list(self.settings.job_title_terms)
-            title = _search_title(props.get("jobtitle"), titles)
-            if not title:
-                raise ValueError("No job title available for a targeted Forager search")
             company_domain = None
             associated_company_id = props.get("associatedcompanyid")
             if associated_company_id:
@@ -451,7 +447,7 @@ class EnrichmentService:
                     logger.info("Could not read associated company domain for contact_id=%s", contact_id)
             results = await self.forager.search_people(
                 company_name,
-                title,
+                None,
                 company_domain=company_domain,
             )
             wanted_name = f"{first} {last}".strip().casefold()
