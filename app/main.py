@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Query
 from app.config import get_settings
 from app.logging_config import configure_logging
-from app.clients.forager import ForagerClient, ForagerError
+from app.clients.forager import ForagerClient, ForagerError, ForagerPersonNotFound
 from app.clients.hubspot import HubSpotClient, HubSpotError
 from app.schemas import HealthResponse, EnrichmentRequest
 from app.security import verify_hubspot_signature
@@ -45,6 +45,9 @@ async def enrich_contact(contact_id: str):
     try:
         await app.state.enrichment.enrich_contact(contact_id)
         return {"contact_id": contact_id, "status": "enriched"}
+    except ForagerPersonNotFound as exc:
+        logger.info("Contact profile not found contact_id=%s", contact_id)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ForagerError, HubSpotError) as exc:
         logger.warning("Contact enrichment failed contact_id=%s error=%s", contact_id, type(exc).__name__)
         raise HTTPException(status_code=502, detail="Upstream enrichment failed") from exc

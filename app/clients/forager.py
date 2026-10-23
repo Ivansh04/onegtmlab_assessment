@@ -16,6 +16,10 @@ class ForagerCreditsExhausted(ForagerError):
     """Raised when the Forager account has no credits remaining."""
 
 
+class ForagerPersonNotFound(ForagerError):
+    """Raised when a search has no safe exact match for the requested person."""
+
+
 class ForagerClient:
     """Small async client for the documented Forager v2 API."""
 

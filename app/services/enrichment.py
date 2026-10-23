@@ -2,7 +2,12 @@ import logging
 import re
 from typing import Any
 
-from app.clients.forager import ForagerClient, ForagerCreditsExhausted, ForagerError
+from app.clients.forager import (
+    ForagerClient,
+    ForagerCreditsExhausted,
+    ForagerError,
+    ForagerPersonNotFound,
+)
 from app.clients.hubspot import HubSpotClient, HubSpotError
 from app.config import Settings
 from app.schemas import EnrichmentSummary
@@ -495,7 +500,9 @@ class EnrichmentService:
             )
 
         if not details:
-            raise ForagerError("Forager returned no person detail match")
+            raise ForagerPersonNotFound(
+                "Forager returned no exact person match; no HubSpot fields were changed"
+            )
 
         role = _current_role(details)
         org = _as_dict(role.get("organization")) or _as_dict(details.get("organization"))
