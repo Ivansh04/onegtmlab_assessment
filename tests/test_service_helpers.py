@@ -80,6 +80,12 @@ def test_search_title_preserves_supported_exact_title():
     assert _search_title("CEO", ["Engineer", "CEO"]) == "CEO"
 
 
+def test_contact_search_does_not_require_provider_person_name_filter():
+    # Forager rejects person_name as a role-search operation in some accounts.
+    # Contact matching verifies the exact name locally after the role search.
+    assert _search_title("Senior Software Engineer at Stripe", ["Engineer"]) == "Engineer"
+
+
 def test_company_matching_rejects_ambiguous_results():
     candidates = [
         {

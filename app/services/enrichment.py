@@ -453,7 +453,6 @@ class EnrichmentService:
                 company_name,
                 title,
                 company_domain=company_domain,
-                person_name=f"{first} {last}",
             )
             wanted_name = f"{first} {last}".strip().casefold()
             for result in results:
