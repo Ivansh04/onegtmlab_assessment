@@ -1,20 +1,23 @@
 import logging
 import re
 from typing import Any
-from app.clients.forager import ForagerClient, ForagerError
+
+from app.clients.forager import ForagerClient, ForagerCreditsExhausted, ForagerError
 from app.clients.hubspot import HubSpotClient, HubSpotError
 from app.config import Settings
 from app.schemas import EnrichmentSummary
 
-
 logger = logging.getLogger(__name__)
+
 
 def _domain(value: str | None) -> str | None:
     if not value:
         return None
     value = value.strip().lower()
     value = re.sub(r"^https?://", "", value)
-    return value.split("/")[0].removeprefix("www.") or None
+    value = value.split("/", 1)[0].split(":", 1)[0]
+    return value.removeprefix("www.") or None
+
 
 def _linkedin_identifier(url: str | None) -> str | None:
     if not url:
@@ -26,6 +29,20 @@ def _linkedin_identifier(url: str | None) -> str | None:
     )
     return match.group(1) if match else None
 
+
+def _linkedin_url(details: dict[str, Any], person: dict[str, Any] | None = None) -> str | None:
+    person = person or {}
+    direct = _first(
+        details, "linkedin_url", "linkedin_profile_url", "profile_url"
+    ) or _first(person, "linkedin_url", "linkedin_profile_url", "profile_url")
+    if direct:
+        return direct
+    info = details.get("linkedin_info") or person.get("linkedin_info") or {}
+    if isinstance(info, dict) and info.get("public_identifier"):
+        return f"https://www.linkedin.com/in/{info['public_identifier']}/"
+    return None
+
+
 def _first(mapping: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         value = mapping.get(key)
@@ -33,7 +50,31 @@ def _first(mapping: dict[str, Any], *keys: str) -> Any:
             return value
     return None
 
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _current_role(details: dict[str, Any]) -> dict[str, Any]:
+    direct = details.get("current_role")
+    if isinstance(direct, dict):
+        return direct
+    roles = [role for role in _as_list(details.get("roles")) if isinstance(role, dict)]
+    current = next((role for role in roles if role.get("is_current") is True), None)
+    return current or (roles[0] if roles else {})
+
+
 class EnrichmentService:
+    """Credit-conscious HubSpot enrichment.
+
+    Automatic flow intentionally does not call paid email or phone lookups.
+    It makes at most one role-search request per discovery/contact match.
+    """
+
     def __init__(
         self,
         settings: Settings,
@@ -46,209 +87,212 @@ class EnrichmentService:
 
     async def enrich_company(self, company_id: str) -> EnrichmentSummary:
         company = await self.hubspot.get_company(company_id)
-        props = company.get("properties", {})
+        props = company.get("properties", {}) or {}
         domain = _domain(props.get("domain"))
         name = props.get("name")
-        if not domain and not name:
-            return EnrichmentSummary(
-                company_id=company_id,
-                warnings=[
-                    "Company has neither domain nor name"
-                ],
-            )
-        candidates = await self.forager.search_companies(
-            domain=domain,
-            name=name,
-        )
-        match = self._match_company(candidates, domain, name)
         warnings: list[str] = []
+
+        if not domain:
+            warnings.append(
+                "Company enrichment needs a domain; no Forager search was made"
+            )
+            candidates: list[dict[str, Any]] = []
+        else:
+            try:
+                candidates = await self.forager.search_companies(domain=domain)
+            except ForagerCreditsExhausted:
+                candidates = []
+                warnings.append("Forager credits exhausted; company was not enriched")
+            except ForagerError as exc:
+                candidates = []
+                warnings.append(f"Forager company search failed: {exc}")
+
+        match = self._match_company(candidates, domain, name)
         if match:
             org = match.get("organization", match)
-            if not isinstance(org, dict):
-                warnings.append(
-                    "Forager returned an unexpected organization format; "
-                    "company fields were not updated"
-                )
-            else:
-                linkedin_info = org.get("linkedin_info") or {}
-                if not isinstance(linkedin_info, dict):
-                    linkedin_info = {}
-                finance_info = org.get("finance_info") or {}
-                if not isinstance(finance_info, dict):
-                    finance_info = {}
-                addresses = org.get("addresses") or []
-                if not isinstance(addresses, list):
-                    addresses = []
-                primary_address = (
-                    addresses[0]
-                    if addresses and isinstance(addresses[0], dict)
-                    else {}
-                )
-                mapped = {
-                    "description": _first(
-                        org,
-                        "description",
-                        "organization_description",
-                    ),
-                    "numberofemployees": _first(
-                        org,
-                        "employees_amount",
-                        "employees",
-                        "employee_count",
-                        "headcount",
-                        "number_of_employees",
-                    ),
-                    "annualrevenue": finance_info.get("revenue"),
-                    "linkedin_company_page": (
-                        _first(
-                            linkedin_info,
-                            "public_profile_url",
-                        )
-                        or _first(
-                            org,
-                            "linkedin_url",
-                            "linkedin_company_url",
-                        )
-                    ),
-                    "city": primary_address.get("city"),
-                    "state": primary_address.get("state"),
-                    "country": primary_address.get("country"),
-                }
-                # Keep only fields with actual values.
-                # Do not overwrite existing CRM data with empty values.
-                mapped = {
-                    key: (
-                        str(value)
-                        if key in {
-                            "numberofemployees",
-                            "annualrevenue",
-                        }
-                        else value
-                    )
-                    for key, value in mapped.items()
-                    if value not in (None, "")
-                }
+            if isinstance(org, dict):
+                mapped = self._company_properties(org)
                 if mapped:
-                    await self.hubspot.update_company(
-                        company_id,
-                        mapped,
-                    )
-        else:
-            warnings.append(
-                "Forager returned no confident company match; "
-                "no company fields were overwritten"
-            )
-        contacts = await self.hubspot.contacts_for_company(company_id)
+                    try:
+                        await self.hubspot.update_company(company_id, mapped)
+                    except HubSpotError:
+                        logger.exception("HubSpot company update failed company_id=%s", company_id)
+                        warnings.append("Company data was found but HubSpot rejected the update")
+                else:
+                    warnings.append("Forager matched the company but returned no mappable fields")
+            else:
+                warnings.append("Forager returned an unexpected organization format")
+        elif domain and candidates:
+            warnings.append("Forager returned candidates but none matched the company confidently")
+        elif domain and not any("credits exhausted" in warning for warning in warnings):
+            warnings.append("Forager returned no company candidates")
+
+        # Existing associated contacts are only enriched by direct LinkedIn URL.
+        # This avoids a role-search call for every contact on a company webhook.
+        try:
+            contacts = await self.hubspot.contacts_for_company(company_id)
+        except HubSpotError:
+            contacts = []
+            warnings.append("Could not retrieve associated HubSpot contacts")
+
         enriched = 0
-        discovered = 0
         for contact in contacts:
+            contact_id = str(contact.get("id", ""))
+            if not contact_id:
+                continue
             try:
-                await self.enrich_contact(str(contact["id"]))
-                enriched += 1
-            except (
-                ForagerError,
-                HubSpotError,
-                KeyError,
-                ValueError,
-            ) as exc:
+                current = await self.hubspot.get_contact(contact_id)
+                contact_props = current.get("properties", {}) or {}
+                if _linkedin_identifier(contact_props.get("hs_linkedin_url")):
+                    await self.enrich_contact(contact_id)
+                    enriched += 1
+            except ForagerCreditsExhausted:
+                warnings.append(
+                    f"Forager credits exhausted while enriching associated contact {contact_id}"
+                )
+                break
+            except (ForagerError, HubSpotError, ValueError) as exc:
                 logger.warning(
-                    "Contact enrichment failed contact_id=%s error=%s",
-                    contact.get("id"),
+                    "Associated contact enrichment failed contact_id=%s error=%s",
+                    contact_id,
                     type(exc).__name__,
                 )
-                warnings.append(
-                    f"Contact {contact.get('id')}: enrichment failed"
+                warnings.append(f"Associated contact {contact_id} was not enriched")
+
+        discovered = 0
+        max_contacts = max(0, int(self.settings.max_contacts_per_company))
+        remaining = max_contacts - len(contacts)
+        if remaining > 0 and domain:
+            try:
+                discovered = await self._discover_and_create_contacts(
+                    company_name=name,
+                    company_domain=domain,
+                    company_id=company_id,
+                    limit=remaining,
                 )
-        if len(contacts) < self.settings.max_contacts_per_company:
-            discovered = await self._discover_and_create_contacts(
-                company_name=name,
-                company_domain=domain,
-                company_id=company_id,
-            )
-            enriched += discovered
-            if discovered == 0:
-                warnings.append(
-                    "No new contacts were discovered. Check the Forager "
-                    "account, company domain, and ALLOWED_JOB_TITLES."
-                )
+            except ForagerCreditsExhausted:
+                warnings.append("Forager credits exhausted during contact discovery; no retry was attempted")
+            except (ForagerError, HubSpotError, ValueError) as exc:
+                logger.warning("Contact discovery failed company_id=%s error=%s", company_id, type(exc).__name__)
+                warnings.append("Contact discovery failed; check the Forager account and job-title configuration")
+
         return EnrichmentSummary(
             company_id=company_id,
             contacts_found=len(contacts) + discovered,
-            contacts_enriched=enriched,
+            contacts_enriched=enriched + discovered,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _company_properties(org: dict[str, Any]) -> dict[str, Any]:
+        finance = _as_dict(org.get("finance_info"))
+        linkedin = _as_dict(org.get("linkedin_info"))
+        addresses = _as_list(org.get("addresses"))
+        address = next((row for row in addresses if isinstance(row, dict)), {})
+        founded = org.get("founded_date")
+        founded_year = str(founded)[:4] if founded else None
+        revenue = finance.get("revenue")
+        employee_count = _first(
+            org,
+            "employees_amount",
+            "employee_count",
+            "headcount",
+            "number_of_employees",
+        )
+        values = {
+            "description": _first(org, "description", "organization_description"),
+            "numberofemployees": employee_count,
+            "annualrevenue": revenue,
+            "linkedin_company_page": _first(linkedin, "public_profile_url")
+            or _first(org, "linkedin_url", "linkedin_company_url"),
+            "founded_year": founded_year,
+            "website": org.get("website"),
+            "city": address.get("city"),
+            "state": _first(address, "state", "region"),
+            "country": address.get("country"),
+            "zip": _first(address, "postcode", "postal_code", "zip"),
+            "address": _first(address, "street", "address", "line1"),
+        }
+        # Deliberately omit enum/select properties (industry and employee range)
+        # until their HubSpot internal option values have been verified.
+        result: dict[str, Any] = {}
+        for key, value in values.items():
+            if value in (None, ""):
+                continue
+            result[key] = str(value) if key in {
+                "numberofemployees", "annualrevenue", "founded_year"
+            } else value
+        return result
 
     async def _discover_and_create_contacts(
         self,
         company_name: str | None,
-        company_domain: str | None,
+        company_domain: str,
         company_id: str,
+        limit: int,
     ) -> int:
-        search_value = company_name or company_domain
-        if not search_value:
+        """Use one role-search request, then detail lookup only for selected people."""
+        if limit <= 0:
             return 0
+        titles = list(self.settings.job_title_terms)
+        if not titles:
+            logger.warning("No ALLOWED_JOB_TITLES configured; skipping discovery")
+            return 0
+        # A single supported title prevents the former N-title credit multiplier.
+        title = titles[0].strip()
+        if not title:
+            return 0
+
+        results = await self.forager.search_people(
+            company_name or company_domain,
+            title,
+            company_domain=company_domain,
+        )
         created = 0
         seen: set[str] = set()
-        for title in self.settings.job_title_terms:
-            try:
-                results = await self.forager.search_people(
-                    search_value,
-                    title,
-                    company_domain=company_domain,
-                )
-            except ForagerError:
-                logger.warning(
-                    "Skipping unsupported Forager job-title filter title=%s",
-                    title,
-                )
+        for result in results:
+            if not isinstance(result, dict):
                 continue
-            for result in results:
-                person = result.get("person", result)
-                organization = result.get("organization", {})
-                if not isinstance(person, dict):
+            person = _as_dict(result.get("person"))
+            organization = _as_dict(result.get("organization"))
+            person_id = person.get("id") or result.get("person_id")
+            linkedin_url = _linkedin_url({}, person)
+            linkedin_identifier = _linkedin_identifier(linkedin_url)
+            identity = str(person_id or linkedin_identifier or _first(person, "full_name", "name") or "")
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+
+            employer_domain = _domain(_first(organization, "domain", "website"))
+            if employer_domain and employer_domain != company_domain:
+                continue
+            employer_name = _first(organization, "name", "legal_name", "organization_name")
+            if company_name and employer_name and employer_name.casefold() != company_name.casefold():
+                # Domain is the stronger identity; allow exact domain matches even
+                # when Forager's display name differs slightly.
+                if employer_domain != company_domain:
                     continue
-                if not isinstance(organization, dict):
-                    organization = {}
-                employer = _first(organization, "name", "organization_name")
-                if company_name and employer and (
-                    str(employer).casefold() != company_name.casefold()
-                ):
-                    continue
-                key = str(
-                    person.get("id")
-                    or person.get("linkedin_url")
-                    or person.get("full_name")
-                    or ""
-                )
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                linkedin_identifier = _linkedin_identifier(
-                    _first(person, "linkedin_url", "profile_url")
-                )
-                person_id = person.get("id")
-                if not person_id and not linkedin_identifier:
-                    continue
+
+            details: dict[str, Any] = {}
+            if person_id or linkedin_identifier:
                 details = await self.forager.person_details(
-                    person_id=int(person_id) if person_id else None,
+                    person_id=int(person_id) if person_id is not None else None,
                     linkedin_identifier=linkedin_identifier,
                 )
-                emails = await self.forager.work_emails(
-                    int(person_id) if person_id else None,
-                    linkedin_identifier,
-                )
-                phones = await self.forager.phone_numbers(
-                    int(person_id) if person_id else None,
-                    linkedin_identifier,
-                )
-                properties = self._discovered_contact_properties(
-                    details, person, organization, title, emails, phones
-                )
-                if properties:
-                    await self.hubspot.create_contact(properties, company_id)
-                    created += 1
-                if created >= self.settings.max_contacts_per_company:
-                    return created
+            properties = self._discovered_contact_properties(
+                details=details,
+                person=person,
+                organization=organization,
+                fallback_title=title,
+                company_name=company_name,
+                linkedin_url=linkedin_url,
+            )
+            if not properties.get("firstname") and not properties.get("lastname"):
+                continue
+            await self.hubspot.create_contact(properties, company_id)
+            created += 1
+            if created >= limit:
+                break
         return created
 
     @staticmethod
@@ -257,44 +301,46 @@ class EnrichmentService:
         person: dict[str, Any],
         organization: dict[str, Any],
         fallback_title: str,
-        emails: list[dict[str, Any]],
-        phones: list[dict[str, Any]],
+        company_name: str | None,
+        linkedin_url: str | None,
     ) -> dict[str, Any]:
-        role = details.get("current_role")
-        if not isinstance(role, dict):
-            role = {}
+        role = _current_role(details)
+        org = _as_dict(role.get("organization")) or _as_dict(details.get("organization")) or organization
+        location = details.get("location")
+        if isinstance(location, dict):
+            location_name = location.get("name")
+        else:
+            location_name = location if isinstance(location, str) else None
+        city = _first(details, "city")
+        state = _first(details, "state", "region")
+        country = _first(details, "country")
+        if location_name and isinstance(location_name, str):
+            parts = [part.strip() for part in location_name.split(",") if part.strip()]
+            if not city and parts:
+                city = parts[0]
+            if not state and len(parts) >= 2:
+                state = parts[1]
+            if not country and len(parts) >= 3:
+                country = parts[-1]
+        full_name = _first(details, "full_name", "name") or _first(person, "full_name", "name")
+        first_name = _first(details, "first_name", "firstname") or _first(person, "first_name", "firstname")
+        last_name = _first(details, "last_name", "lastname") or _first(person, "last_name", "lastname")
+        if full_name and not (first_name or last_name):
+            name_parts = str(full_name).strip().split(maxsplit=1)
+            first_name = name_parts[0] if name_parts else None
+            last_name = name_parts[1] if len(name_parts) > 1 else None
+        details_linkedin = _linkedin_url(details, person) or linkedin_url
         values = {
-            "firstname": _first(details, "first_name", "firstname"),
-            "lastname": _first(details, "last_name", "lastname"),
-            "jobtitle": (
-                _first(details, "job_title", "headline")
-                or _first(role, "title", "role_title")
-                or fallback_title
-            ),
-            "hs_linkedin_url": (
-                _first(
-                    details,
-                    "linkedin_url",
-                    "linkedin_profile_url",
-                    "profile_url",
-                )
-                or _first(person, "linkedin_url", "profile_url")
-            ),
-            "email": _first(emails[0], "email") if emails else None,
-            "phone": (
-                _first(phones[0], "phone_number", "phone")
-                if phones else None
-            ),
-            "company": _first(organization, "name", "organization_name"),
-            "city": _first(details, "city"),
-            "state": _first(details, "state", "region"),
-            "country": _first(details, "country"),
+            "firstname": first_name,
+            "lastname": last_name,
+            "jobtitle": _first(details, "job_title", "headline") or _first(role, "role_title", "title") or fallback_title,
+            "hs_linkedin_url": details_linkedin,
+            "company": _first(org, "name", "legal_name", "organization_name") or company_name,
+            "city": city,
+            "state": state,
+            "country": country,
         }
-        return {
-            key: value for key, value in values.items()
-            if value not in (None, "")
-        }
-
+        return {key: value for key, value in values.items() if value not in (None, "")}
 
     @staticmethod
     def _match_company(
@@ -304,298 +350,153 @@ class EnrichmentService:
     ) -> dict[str, Any] | None:
         normalized_domain = _domain(domain)
         normalized_name = name.strip().casefold() if name else None
-
         matches: list[tuple[int, dict[str, Any]]] = []
 
         for item in candidates:
             org = item.get("organization", item)
             if not isinstance(org, dict):
                 continue
-
-            candidate_name = _first(
-                org, "name", "legal_name", "organization_name"
-            )
-            candidate_name = (
-                candidate_name.strip().casefold()
-                if isinstance(candidate_name, str)
-                else None
-            )
-
-            candidate_domain = _domain(
-                _first(org, "domain", "primary_domain")
-            )
+            candidate_name = _first(org, "name", "legal_name", "organization_name")
+            candidate_name_norm = candidate_name.strip().casefold() if isinstance(candidate_name, str) else None
+            candidate_domain = _domain(_first(org, "domain", "primary_domain"))
             website_domain = _domain(org.get("website"))
-
-            # If the CRM has a domain, require an exact domain match.
-            if normalized_domain and normalized_domain not in {
-                candidate_domain,
-                website_domain,
-            }:
+            if normalized_domain and normalized_domain not in {candidate_domain, website_domain}:
                 continue
+            linkedin = _as_dict(org.get("linkedin_info"))
+            linkedin_identifier = str(linkedin.get("public_identifier") or "").strip().casefold()
 
-            # Read the LinkedIn company identifier when available.
-            linkedin_info = org.get("linkedin_info") or {}
-            linkedin_identifier = (
-                linkedin_info.get("public_identifier")
-                if isinstance(linkedin_info, dict)
-                else None
-            )
-            linkedin_identifier = (
-                linkedin_identifier.strip().casefold()
-                if isinstance(linkedin_identifier, str)
-                else None
-            )
-
-            score = 0
-
-            if normalized_name and candidate_name == normalized_name:
-                score += 4
-
-            if normalized_domain and candidate_domain == normalized_domain:
-                score += 3
-
-            if normalized_domain and website_domain == normalized_domain:
-                score += 2
-
-            # Prefer the official OpenAI LinkedIn company identifier.
-            if (
-                normalized_name == "openai"
-                and linkedin_identifier == "openai"
-            ):
+            # Strong positive identity signal for official company profiles.
+            if normalized_name == "openai" and normalized_domain == "openai.com" and linkedin_identifier == "openai":
                 return item
 
-            # Without a domain, require an exact company-name match.
-            if not normalized_domain and (
-                not normalized_name or candidate_name != normalized_name
-            ):
-                continue
-
+            score = 0
+            if normalized_name and candidate_name_norm == normalized_name:
+                score += 10
+            if normalized_domain and candidate_domain == normalized_domain:
+                score += 5
+            if normalized_domain and website_domain == normalized_domain:
+                score += 2
+            if normalized_name and candidate_name_norm and candidate_name_norm in {
+                normalized_name + " inc.", normalized_name + " inc", normalized_name + " llc"
+            }:
+                score += 3
             if score:
                 matches.append((score, item))
 
         if not matches:
             return None
-
-        matches.sort(key=lambda match: match[0], reverse=True)
-
-        exact_name_domain = [
-            item
-            for score, item in matches
-            if normalized_name
-            and normalized_domain
-            and _domain(
-                _first(
-                    item.get("organization", item),
-                    "domain",
-                    "primary_domain",
-                )
-            ) == normalized_domain
-            and (
-                _first(
-                    item.get("organization", item),
-                    "name",
-                    "legal_name",
-                    "organization_name",
-                )
-                or ""
-            ).strip().casefold() == normalized_name
-        ]
-        if len(exact_name_domain) == 1:
-            return exact_name_domain[0]
-
-        # Reject tied top results rather than selecting arbitrarily.
-        if len(matches) > 1 and matches[0][0] == matches[1][0]:
+        matches.sort(key=lambda row: row[0], reverse=True)
+        top_score = matches[0][0]
+        top_matches = [item for score, item in matches if score == top_score]
+        if len(top_matches) != 1:
             logger.warning(
-                "Ambiguous Forager company match: domain=%s name=%s",
+                "Ambiguous Forager company match: domain=%s name=%s candidates=%d",
                 normalized_domain,
                 normalized_name,
+                len(top_matches),
             )
             return None
+        return top_matches[0]
 
-        return matches[0][1]
-
-
-    async def enrich_contact(
-        self,
-        contact_id: str,
-    ) -> dict[str, Any]:
+    async def enrich_contact(self, contact_id: str) -> dict[str, Any]:
         contact = await self.hubspot.get_contact(contact_id)
-        props = contact.get("properties", {})
-        identifier = _linkedin_identifier(
-            props.get("hs_linkedin_url")
-        )
-        email = props.get("email")
+        props = contact.get("properties", {}) or {}
+        identifier = _linkedin_identifier(props.get("hs_linkedin_url"))
         first = props.get("firstname")
         last = props.get("lastname")
         company_name = props.get("company")
-        if not identifier and not (
-            first and last and company_name
-        ):
-            raise ValueError(
-                "Contact needs LinkedIn URL or first name, "
-                "last name, and company"
-            )
-        person_id = None
+        existing_fields = (
+            first,
+            last,
+            props.get("jobtitle"),
+            props.get("hs_linkedin_url"),
+            props.get("city"),
+            props.get("country"),
+        )
+        if all(existing_fields):
+            # The webhook may fire immediately after our own create_contact call.
+            # Do not spend another credit enriching a record that is already useful.
+            return contact
+
         details: dict[str, Any] = {}
+        person_id: int | None = None
         if identifier:
-            details = await self.forager.person_details(
-                linkedin_identifier=identifier
-            )
+            details = await self.forager.person_details(linkedin_identifier=identifier)
         else:
-            # Search by title, then validate the person's name
-            # and employer before accepting a result.
-            for title in (
-                props.get("jobtitle"),
-                *self.settings.job_title_terms,
-            ):
-                if not title:
-                    continue
+            if not (first and last and company_name):
+                raise ValueError("Contact needs LinkedIn URL or first name, last name, and company")
+            titles = list(self.settings.job_title_terms)
+            title = props.get("jobtitle") or (titles[0] if titles else None)
+            if not title:
+                raise ValueError("No job title available for a targeted Forager search")
+            company_domain = None
+            associated_company_id = props.get("associatedcompanyid")
+            if associated_company_id:
                 try:
-                    results = await self.forager.search_people(
-                        company_name,
-                        title,
-                    )
-                except ForagerError:
-                    logger.warning(
-                        "Skipping unsupported Forager job-title filter title=%s",
-                        title,
-                    )
-                    continue
-                for result in results:
-                    person = result.get("person", result)
-                    if not isinstance(person, dict):
-                        continue
-                    found_name = (
-                        _first(person, "full_name", "name") or ""
-                    ).casefold()
-                    found_org = result.get("organization", {})
-                    if not isinstance(found_org, dict):
-                        found_org = {}
-                    found_company = (
-                        _first(found_org, "name") or ""
-                    ).casefold()
-                    wanted_name = (
-                        f"{first} {last}".strip().casefold()
-                    )
-                    if (
-                        found_name == wanted_name
-                        and (
-                            not found_company
-                            or found_company == company_name.casefold()
-                        )
-                    ):
-                        person_id = (
-                            person.get("id")
-                            or result.get("person_id")
-                        )
-                        break
-                if person_id:
-                    break
-            if person_id:
-                details = await self.forager.person_details(
-                    person_id=int(person_id)
-                )
-        if not details:
-            raise ForagerError(
-                "Forager returned no person detail match"
+                    company = await self.hubspot.get_company(str(associated_company_id))
+                    company_domain = _domain((company.get("properties") or {}).get("domain"))
+                except HubSpotError:
+                    logger.info("Could not read associated company domain for contact_id=%s", contact_id)
+            results = await self.forager.search_people(
+                company_name,
+                title,
+                company_domain=company_domain,
+                person_name=f"{first} {last}",
             )
-        person_id = person_id or details.get("id")
-        linkedin = _first(
-            details,
-            "linkedin_url",
-            "linkedin_profile_url",
-            "profile_url",
-        )
-        linkedin = linkedin or props.get("hs_linkedin_url")
-        identifier = _linkedin_identifier(linkedin) or identifier
-        emails: list[dict[str, Any]] = []
-        phones: list[dict[str, Any]] = []
-        if person_id or identifier:
-            try:
-                emails = await self.forager.work_emails(
-                    int(person_id) if person_id else None,
-                    identifier,
-                )
-            except ForagerError:
-                logger.info(
-                    "Work email lookup unavailable for contact_id=%s",
-                    contact_id,
-                )
-            try:
-                phones = await self.forager.phone_numbers(
-                    int(person_id) if person_id else None,
-                    identifier,
-                )
-            except ForagerError:
-                logger.info(
-                    "Phone lookup unavailable for contact_id=%s",
-                    contact_id,
-                )
-        role = details.get("current_role")
-        if not isinstance(role, dict):
-            role = {}
-        org = details.get("organization")
-        if not isinstance(org, dict):
-            org = {}
-        location = _first(details, "location", "city")
-        city = _first(details, "city") or (
-            location.split(",")[0].strip()
-            if isinstance(location, str)
-            else None
-        )
+            wanted_name = f"{first} {last}".strip().casefold()
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                person = _as_dict(result.get("person"))
+                found_name = str(_first(person, "full_name", "name") or "").strip().casefold()
+                if found_name != wanted_name:
+                    continue
+                found_org = _as_dict(result.get("organization"))
+                found_domain = _domain(_first(found_org, "domain", "website"))
+                if company_domain and found_domain and found_domain != company_domain:
+                    continue
+                person_id = person.get("id")
+                profile_url = _linkedin_url({}, person)
+                profile_identifier = _linkedin_identifier(profile_url)
+                if person_id or profile_identifier:
+                    details = await self.forager.person_details(
+                        person_id=int(person_id) if person_id is not None else None,
+                        linkedin_identifier=profile_identifier,
+                    )
+                break
+
+        if not details:
+            raise ForagerError("Forager returned no person detail match")
+
+        role = _current_role(details)
+        org = _as_dict(role.get("organization")) or _as_dict(details.get("organization"))
+        linkedin = _linkedin_url(details) or props.get("hs_linkedin_url")
+        location = details.get("location")
+        location_name = location.get("name") if isinstance(location, dict) else location if isinstance(location, str) else None
+        city = _first(details, "city")
         state = _first(details, "state", "region")
         country = _first(details, "country")
-        if isinstance(location, str) and "," in location:
-            parts = [
-                part.strip()
-                for part in location.split(",")
-            ]
+        if isinstance(location_name, str):
+            parts = [part.strip() for part in location_name.split(",") if part.strip()]
+            if not city and parts:
+                city = parts[0]
             if not state and len(parts) >= 2:
                 state = parts[1]
             if not country and len(parts) >= 3:
                 country = parts[-1]
-        found_email = (
-            _first(emails[0], "email")
-            if emails
-            else None
-        )
-        found_phone = (
-            _first(phones[0], "phone_number", "phone")
-            if phones
-            else None
-        )
-        enriched = {
-            "firstname": (
-                _first(details, "first_name", "firstname")
-                or first
-            ),
-            "lastname": (
-                _first(details, "last_name", "lastname")
-                or last
-            ),
-            "jobtitle": (
-                _first(details, "job_title", "headline")
-                or _first(role, "title", "role_title")
-                or props.get("jobtitle")
-            ),
+
+        mapped = {
+            "firstname": _first(details, "first_name", "firstname") or first,
+            "lastname": _first(details, "last_name", "lastname") or last,
+            "jobtitle": _first(details, "job_title", "headline") or _first(role, "role_title", "title") or props.get("jobtitle"),
             "hs_linkedin_url": linkedin,
-            "email": email or found_email,
-            "phone": found_phone or props.get("phone"),
-            "company": (
-                _first(org, "name", "organization_name")
-                or company_name
-            ),
+            # Existing email/phone are preserved; automatic flow never buys lookups.
+            "email": props.get("email"),
+            "phone": props.get("phone"),
+            "company": _first(org, "name", "legal_name", "organization_name") or company_name,
             "city": city or props.get("city"),
             "state": state or props.get("state"),
             "country": country or props.get("country"),
         }
-        # Avoid overwriting existing CRM values with empty data.
-        enriched = {
-            key: value
-            for key, value in enriched.items()
-            if value not in (None, "")
-        }
-        return await self.hubspot.update_contact(
-            contact_id,
-            enriched,
-        )
+        mapped = {key: value for key, value in mapped.items() if value not in (None, "")}
+        return await self.hubspot.update_contact(contact_id, mapped)
