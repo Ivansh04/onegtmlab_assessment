@@ -19,7 +19,7 @@ class HubSpotClient:
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(25.0, connect=8.0),
             headers={
-                "Authorization": f"Bearer {settings.hubspot_access_token}",
+                "Authorization": "Bearer " + settings.hubspot_access_token,
                 "Content-Type": "application/json",
             },
         )

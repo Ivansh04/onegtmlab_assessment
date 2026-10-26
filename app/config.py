@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     hubspot_access_token: str = ""
     hubspot_client_secret: str = ""
+    app_secret: str = ""
     hubspot_api_base_url: str = "https://api.hubapi.com"
     forager_api_key: str = ""
     forager_account_id: str = ""
@@ -18,10 +19,20 @@ class Settings(BaseSettings):
     max_contacts_per_company: int = Field(default=5, ge=1, le=50)
     webhook_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     enable_webhook_signature_validation: bool = True
+    skip_import_webhooks: bool = True
+    import_change_sources: str = "IMPORT"
 
     @property
     def job_title_terms(self) -> list[str]:
         return [x.strip() for x in self.allowed_job_titles.split(",") if x.strip()]
+
+    @property
+    def import_sources(self) -> set[str]:
+        return {
+            value.strip().upper()
+            for value in self.import_change_sources.split(",")
+            if value.strip()
+        }
 
     @model_validator(mode="after")
     def validate_production_secrets(self):
@@ -30,6 +41,8 @@ class Settings(BaseSettings):
                 raise ValueError("HUBSPOT_ACCESS_TOKEN is required in production")
             if not self.forager_api_key or not self.forager_account_id:
                 raise ValueError("FORAGER_API_KEY and FORAGER_ACCOUNT_ID are required in production")
+            if not self.app_secret and not self.hubspot_client_secret:
+                raise ValueError("APP_SECRET or HUBSPOT_CLIENT_SECRET is required in production")
         return self
 
 @lru_cache

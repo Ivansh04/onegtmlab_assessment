@@ -10,6 +10,12 @@ A Python/FastAPI service for enriching HubSpot company and contact records with 
 - Enrich an existing HubSpot contact.
 - Discover people using configurable job-title terms.
 - Receive company/contact webhook events.
+- Acknowledge webhook deliveries immediately and process enrichment in the
+  application background task set, avoiding HubSpot retries during slow lookups.
+- Skip bulk-import webhook events by default so imports do not spend enrichment
+  credits; configure `IMPORT_CHANGE_SOURCES` when additional import markers are used.
+- Optional shared-secret protection for sensitive routes via `APP_SECRET`,
+  supplied as `X-App-Secret` or `?token=`.
 - Keep secrets in environment variables.
 - Structured logs that avoid logging CRM payloads and contact data.
 - Small unit-test suite and Railway deployment configuration.
@@ -76,6 +82,11 @@ Example contact search body:
 ```
 
 - `POST /webhooks/hubspot`
+- `POST /webhook`
+- `POST /webhook/company`
+- `POST /webhook/contact`
+- `POST /enrich/company`
+- `POST /enrich/contact`
 
 ## HubSpot setup notes
 
@@ -84,6 +95,11 @@ Example contact search body:
 3. For app-level webhook subscriptions, subscribe to company creation and contact creation events and set the callback URL to `https://YOUR-DOMAIN/webhooks/hubspot`.
 4. Set `HUBSPOT_CLIENT_SECRET` and keep signature validation enabled for production.
 5. Test signatures with actual HubSpot deliveries before going live.
+
+For an additional deployment-level safeguard, set `APP_SECRET`. The service
+accepts it in the `X-App-Secret` header or `token` query parameter on enrichment
+and webhook routes. `HUBSPOT_CLIENT_SECRET` remains the source for HubSpot
+signature-v3 verification.
 
 A private app token alone does not automatically configure app-level webhook subscriptions. If your HubSpot setup uses workflow webhook actions instead, configure the action's authentication and adapt the verification scheme accordingly.
 

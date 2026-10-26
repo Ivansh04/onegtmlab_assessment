@@ -5,6 +5,15 @@ from urllib.parse import unquote
 from fastapi import HTTPException, Request
 from app.config import Settings
 
+
+def verify_app_secret(request: Request, settings: Settings) -> None:
+    if not settings.app_secret:
+        return
+    supplied = request.headers.get("X-App-Secret") or request.query_params.get("token") or ""
+    if not hmac.compare_digest(supplied, settings.app_secret):
+        raise HTTPException(status_code=401, detail="Invalid application secret")
+
+
 def verify_hubspot_signature(request: Request, raw_body: bytes, settings: Settings) -> None:
     """Validate HubSpot v3 request signatures when configured for a public app."""
     if not settings.enable_webhook_signature_validation:

@@ -64,6 +64,29 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _contact_value(mapping: dict[str, Any], *keys: str) -> Any:
+    value = _first(mapping, *keys)
+    if value:
+        return value
+    for container_name in ("contact_info", "contact_details", "emails", "phones"):
+        container = mapping.get(container_name)
+        if isinstance(container, dict):
+            value = _first(container, *keys)
+            if value:
+                return value
+        elif isinstance(container, list):
+            for item in container:
+                if isinstance(item, dict):
+                    value = _first(item, *keys)
+                    if value:
+                        return value
+                elif isinstance(item, str) and any(
+                    key in keys for key in ("email", "work_email", "phone", "phone_number")
+                ):
+                    return item
+    return None
+
+
 def _person_name(person: dict[str, Any]) -> str:
     full_name = _first(person, "full_name", "name")
     if full_name:
@@ -365,6 +388,8 @@ class EnrichmentService:
             "city": city,
             "state": state,
             "country": country,
+            "email": _contact_value(details, "email", "work_email", "work_email_address"),
+            "phone": _contact_value(details, "phone", "phone_number", "mobile_phone"),
         }
         return {key: value for key, value in values.items() if value not in (None, "")}
 
@@ -527,8 +552,12 @@ class EnrichmentService:
             "jobtitle": _first(details, "job_title", "headline") or _first(role, "role_title", "title") or props.get("jobtitle"),
             "hs_linkedin_url": linkedin,
             # Existing email/phone are preserved; automatic flow never buys lookups.
-            "email": props.get("email"),
-            "phone": props.get("phone"),
+            "email": props.get("email") or _contact_value(
+                details, "email", "work_email", "work_email_address"
+            ),
+            "phone": props.get("phone") or _contact_value(
+                details, "phone", "phone_number", "mobile_phone"
+            ),
             "company": _first(org, "name", "legal_name", "organization_name") or company_name,
             "city": city or props.get("city"),
             "state": state or props.get("state"),
