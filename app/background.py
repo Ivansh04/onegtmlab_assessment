@@ -14,6 +14,7 @@ def enqueue(
     task = asyncio.create_task(operation(*args))
     tasks.add(task)
     task.add_done_callback(tasks.discard)
+    
 
     def report_failure(done: asyncio.Task[Any]) -> None:
         if not done.cancelled() and done.exception() is not None:
