@@ -2,7 +2,14 @@ import json
 import httpx
 import pytest
 
-from app.services.enrichment import _domain, _linkedin_identifier, _person_name, EnrichmentService, _search_title
+from app.services.enrichment import (
+    _domain,
+    _linkedin_identifier,
+    _linkedin_url,
+    _person_name,
+    EnrichmentService,
+    _search_title,
+)
 from app.clients.hubspot import HubSpotClient
 from app.clients.forager import ForagerClient
 from app.config import Settings
@@ -136,6 +143,13 @@ def test_forager_role_row_can_be_used_as_person_record():
 
 def test_person_name_supports_first_and_last_name_fields():
     assert _person_name({"first_name": "Example", "last_name": "Person"}) == "Example Person"
+
+
+def test_linkedin_url_uses_person_public_identifier():
+    assert _linkedin_url(
+        {},
+        {"linkedin_info": {"public_identifier": "example-person"}},
+    ) == "https://www.linkedin.com/in/example-person/"
 
 
 def test_company_matching_rejects_ambiguous_results():
