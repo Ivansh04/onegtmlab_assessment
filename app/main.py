@@ -56,8 +56,16 @@ async def enrich_company(company_id: str, request: Request):
 async def enrich_contact(contact_id: str, request: Request):
     verify_app_secret(request, settings)
     try:
-        await app.state.enrichment.enrich_contact(contact_id)
-        return {"contact_id": contact_id, "status": "enriched"}
+        reveal_contacts = request.query_params.get("reveal_contacts", "").lower() == "true"
+        await app.state.enrichment.enrich_contact(
+            contact_id,
+            reveal_contacts=reveal_contacts,
+        )
+        return {
+            "contact_id": contact_id,
+            "status": "enriched",
+            "paid_lookups": reveal_contacts,
+        }
     except ForagerPersonNotFound as exc:
         logger.info("Contact profile not found contact_id=%s", contact_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc

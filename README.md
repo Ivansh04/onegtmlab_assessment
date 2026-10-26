@@ -70,6 +70,11 @@ uvicorn app.main:app --reload
 - `POST /api/enrich/contact/{hubspot_contact_id}`
 - `POST /api/find-contacts`
 
+By default, contact enrichment does not run paid email or phone lookups. For an
+intentional one-contact demo, opt in explicitly with
+`/api/enrich/contact/{hubspot_contact_id}?reveal_contacts=true`. Webhook and
+company-triggered enrichment remain credit-conscious and leave this option off.
+
 Example contact search body:
 
 ```json

@@ -449,7 +449,9 @@ class EnrichmentService:
             return None
         return top_matches[0]
 
-    async def enrich_contact(self, contact_id: str) -> dict[str, Any]:
+    async def enrich_contact(
+        self, contact_id: str, reveal_contacts: bool = False
+    ) -> dict[str, Any]:
         contact = await self.hubspot.get_contact(contact_id)
         props = contact.get("properties", {}) or {}
         identifier = _linkedin_identifier(props.get("hs_linkedin_url"))
@@ -527,6 +529,22 @@ class EnrichmentService:
         if not details:
             raise ForagerPersonNotFound(
                 "Forager returned no exact person match; no HubSpot fields were changed"
+            )
+
+        if reveal_contacts:
+            lookup_person_id = person_id
+            lookup_linkedin = _linkedin_identifier(_linkedin_url(details)) or identifier
+            emails = await self.forager.work_emails(lookup_person_id, lookup_linkedin)
+            phones = await self.forager.phone_numbers(lookup_person_id, lookup_linkedin)
+            if emails:
+                details["emails"] = emails
+            if phones:
+                details["phones"] = phones
+            logger.info(
+                "Forager contact lookups completed contact_id=%s emails=%d phones=%d",
+                contact_id,
+                len(emails),
+                len(phones),
             )
 
         role = _current_role(details)
