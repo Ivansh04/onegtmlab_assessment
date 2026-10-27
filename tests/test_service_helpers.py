@@ -8,6 +8,7 @@ from app.services.enrichment import (
     _linkedin_url,
     _person_name,
     _role_matches_title,
+    _role_matches_any_title,
     EnrichmentService,
     _search_title,
 )
@@ -149,6 +150,13 @@ def test_person_name_supports_first_and_last_name_fields():
 def test_role_matching_supports_flat_forager_result():
     assert _role_matches_title({"role_title": "Senior Engineer"}, "Engineer")
     assert not _role_matches_title({"role_title": "Product Manager"}, "Engineer")
+
+
+def test_role_matching_accepts_any_configured_title():
+    assert _role_matches_any_title(
+        {"role_title": "Chief Technology Officer"},
+        ["Engineer", "CTO", "Chief Technology Officer"],
+    )
 
 
 def test_linkedin_url_uses_person_public_identifier():

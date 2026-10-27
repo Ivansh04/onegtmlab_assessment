@@ -104,6 +104,10 @@ def _role_matches_title(person: dict[str, Any], title: str) -> bool:
     return wanted in str(role_title or "").casefold()
 
 
+def _role_matches_any_title(person: dict[str, Any], titles: list[str]) -> bool:
+    return any(_role_matches_title(person, title) for title in titles)
+
+
 def _current_role(details: dict[str, Any]) -> dict[str, Any]:
     direct = details.get("current_role")
     if isinstance(direct, dict):
@@ -323,9 +327,11 @@ class EnrichmentService:
             if not isinstance(result, dict):
                 continue
             person = _as_dict(result.get("person", result))
-            if not _role_matches_title({**result, **person}, title):
+            if not _role_matches_any_title({**result, **person}, titles):
                 continue
-            organization = _as_dict(result.get("organization"))
+            organization = _as_dict(person.get("organization")) or _as_dict(
+                result.get("organization")
+            )
             person_id = person.get("id") or result.get("person_id")
             linkedin_url = _linkedin_url({}, person)
             linkedin_identifier = _linkedin_identifier(linkedin_url)
