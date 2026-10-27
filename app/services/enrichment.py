@@ -101,7 +101,20 @@ def _role_matches_title(person: dict[str, Any], title: str) -> bool:
     if not wanted:
         return True
     role_title = _first(person, "role_title", "job_title", "title", "headline")
-    return wanted in str(role_title or "").casefold()
+    if role_title and wanted in str(role_title).casefold():
+        return True
+    current_role = _as_dict(person.get("current_role"))
+    role_title = _first(current_role, "role_title", "job_title", "title", "headline")
+    if role_title and wanted in str(role_title).casefold():
+        return True
+    roles = person.get("roles")
+    if isinstance(roles, list):
+        return any(
+            _role_matches_title(role, title)
+            for role in roles
+            if isinstance(role, dict)
+        )
+    return False
 
 
 def _role_matches_any_title(person: dict[str, Any], titles: list[str]) -> bool:
@@ -295,6 +308,11 @@ class EnrichmentService:
         """Use one role-search request, then detail lookup only for selected people."""
         if limit <= 0:
             return 0
+        logger.info(
+            "Starting company contact discovery company_id=%s target=%d",
+            company_id,
+            limit,
+        )
         titles = list(self.settings.job_title_terms)
         if not titles:
             logger.warning("No ALLOWED_JOB_TITLES configured; skipping discovery")
@@ -308,7 +326,11 @@ class EnrichmentService:
         seen: set[str] = set()
         provider_title_filter = True
         max_pages = max(1, min(10, limit * 2))
+        pages_requested = 0
+        candidates_seen = 0
+        title_matches = 0
         for page in range(1, max_pages + 1):
+            pages_requested += 1
             try:
                 results = await self.forager.search_people(
                     company_name or company_domain,
@@ -335,9 +357,11 @@ class EnrichmentService:
             for result in results:
                 if not isinstance(result, dict):
                     continue
+                candidates_seen += 1
                 person = _as_dict(result.get("person", result))
                 if not _role_matches_any_title({**result, **person}, titles):
                     continue
+                title_matches += 1
                 organization = _as_dict(person.get("organization")) or _as_dict(
                     result.get("organization")
                 )
@@ -381,6 +405,16 @@ class EnrichmentService:
                     break
             if created >= limit:
                 break
+        logger.info(
+            "Completed company contact discovery company_id=%s target=%d created=%d "
+            "pages=%d candidates=%d title_matches=%d",
+            company_id,
+            limit,
+            created,
+            pages_requested,
+            candidates_seen,
+            title_matches,
+        )
         return created
 
     @staticmethod
