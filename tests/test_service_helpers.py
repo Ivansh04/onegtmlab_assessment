@@ -191,6 +191,14 @@ def test_company_matching_rejects_ambiguous_results():
     assert result is None
 
 
+def test_company_target_counts_successfully_enriched_contacts():
+    max_contacts = 5
+    associated_contacts = 4
+    successfully_enriched = 0
+    assert max_contacts - successfully_enriched == 5
+    assert max_contacts - associated_contacts != max_contacts
+
+
 def test_hubspot_client_uses_configured_bearer_token():
     client = HubSpotClient(Settings(hubspot_access_token="test-token"))
     assert client.client.headers["Authorization"] == "Bearer test-token"

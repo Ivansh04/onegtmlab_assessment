@@ -235,7 +235,10 @@ class EnrichmentService:
 
         discovered = 0
         max_contacts = max(0, int(self.settings.max_contacts_per_company))
-        remaining = max_contacts - len(contacts)
+        # The demo target is the number of usable enriched contacts, not merely
+        # the number of association rows. Stale or unmatched HubSpot contacts
+        # must not consume capacity needed to produce the target record set.
+        remaining = max_contacts - enriched
         if remaining > 0 and domain:
             try:
                 discovered = await self._discover_and_create_contacts(
