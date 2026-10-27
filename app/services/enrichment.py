@@ -96,6 +96,14 @@ def _person_name(person: dict[str, Any]) -> str:
     return " ".join(str(part).strip() for part in (first, last) if part).strip()
 
 
+def _role_matches_title(person: dict[str, Any], title: str) -> bool:
+    wanted = title.strip().casefold()
+    if not wanted:
+        return True
+    role_title = _first(person, "role_title", "job_title", "title", "headline")
+    return wanted in str(role_title or "").casefold()
+
+
 def _current_role(details: dict[str, Any]) -> dict[str, Any]:
     direct = details.get("current_role")
     if isinstance(direct, dict):
@@ -292,17 +300,31 @@ class EnrichmentService:
         if not title:
             return 0
 
-        results = await self.forager.search_people(
-            company_name or company_domain,
-            title,
-            company_domain=company_domain,
-        )
+        try:
+            results = await self.forager.search_people(
+                company_name or company_domain,
+                title,
+                company_domain=company_domain,
+            )
+        except ForagerError as exc:
+            if "400" not in str(exc):
+                raise
+            logger.info(
+                "Forager rejected role filter; retrying discovery without provider title filter"
+            )
+            results = await self.forager.search_people(
+                company_name or company_domain,
+                None,
+                company_domain=company_domain,
+            )
         created = 0
         seen: set[str] = set()
         for result in results:
             if not isinstance(result, dict):
                 continue
             person = _as_dict(result.get("person", result))
+            if not _role_matches_title({**result, **person}, title):
+                continue
             organization = _as_dict(result.get("organization"))
             person_id = person.get("id") or result.get("person_id")
             linkedin_url = _linkedin_url({}, person)
@@ -476,16 +498,18 @@ class EnrichmentService:
         if identifier:
             details = await self.forager.person_details(linkedin_identifier=identifier)
         else:
-            if not (first and last and company_name):
-                raise ValueError("Contact needs LinkedIn URL or first name, last name, and company")
             company_domain = None
             associated_company_id = props.get("associatedcompanyid")
             if associated_company_id:
                 try:
                     company = await self.hubspot.get_company(str(associated_company_id))
-                    company_domain = _domain((company.get("properties") or {}).get("domain"))
+                    company_props = company.get("properties") or {}
+                    company_name = company_name or company_props.get("name")
+                    company_domain = _domain(company_props.get("domain"))
                 except HubSpotError:
                     logger.info("Could not read associated company domain for contact_id=%s", contact_id)
+            if not (first and last and company_name):
+                raise ValueError("Contact needs LinkedIn URL or first name, last name, and company association")
             results = await self.forager.search_people(
                 company_name,
                 None,

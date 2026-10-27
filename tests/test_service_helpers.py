@@ -7,6 +7,7 @@ from app.services.enrichment import (
     _linkedin_identifier,
     _linkedin_url,
     _person_name,
+    _role_matches_title,
     EnrichmentService,
     _search_title,
 )
@@ -143,6 +144,11 @@ def test_forager_role_row_can_be_used_as_person_record():
 
 def test_person_name_supports_first_and_last_name_fields():
     assert _person_name({"first_name": "Example", "last_name": "Person"}) == "Example Person"
+
+
+def test_role_matching_supports_flat_forager_result():
+    assert _role_matches_title({"role_title": "Senior Engineer"}, "Engineer")
+    assert not _role_matches_title({"role_title": "Product Manager"}, "Engineer")
 
 
 def test_linkedin_url_uses_person_public_identifier():
