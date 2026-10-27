@@ -304,70 +304,81 @@ class EnrichmentService:
         if not title:
             return 0
 
-        try:
-            results = await self.forager.search_people(
-                company_name or company_domain,
-                title,
-                company_domain=company_domain,
-            )
-        except ForagerError as exc:
-            if "400" not in str(exc):
-                raise
-            logger.info(
-                "Forager rejected role filter; retrying discovery without provider title filter"
-            )
-            results = await self.forager.search_people(
-                company_name or company_domain,
-                None,
-                company_domain=company_domain,
-            )
         created = 0
         seen: set[str] = set()
-        for result in results:
-            if not isinstance(result, dict):
-                continue
-            person = _as_dict(result.get("person", result))
-            if not _role_matches_any_title({**result, **person}, titles):
-                continue
-            organization = _as_dict(person.get("organization")) or _as_dict(
-                result.get("organization")
-            )
-            person_id = person.get("id") or result.get("person_id")
-            linkedin_url = _linkedin_url({}, person)
-            linkedin_identifier = _linkedin_identifier(linkedin_url)
-            identity = str(person_id or linkedin_identifier or _first(person, "full_name", "name") or "")
-            if not identity or identity in seen:
-                continue
-            seen.add(identity)
-
-            employer_domain = _domain(_first(organization, "domain", "website"))
-            if employer_domain and employer_domain != company_domain:
-                continue
-            employer_name = _first(organization, "name", "legal_name", "organization_name")
-            if company_name and employer_name and employer_name.casefold() != company_name.casefold():
-                # Domain is the stronger identity; allow exact domain matches even
-                # when Forager's display name differs slightly.
-                if employer_domain != company_domain:
-                    continue
-
-            details: dict[str, Any] = {}
-            if person_id or linkedin_identifier:
-                details = await self.forager.person_details(
-                    person_id=int(person_id) if person_id is not None else None,
-                    linkedin_identifier=linkedin_identifier,
+        provider_title_filter = True
+        max_pages = max(1, min(10, limit * 2))
+        for page in range(1, max_pages + 1):
+            try:
+                results = await self.forager.search_people(
+                    company_name or company_domain,
+                    title if provider_title_filter else None,
+                    page=page,
+                    company_domain=company_domain,
                 )
-            properties = self._discovered_contact_properties(
-                details=details,
-                person=person,
-                organization=organization,
-                fallback_title=title,
-                company_name=company_name,
-                linkedin_url=linkedin_url,
-            )
-            if not properties.get("firstname") and not properties.get("lastname"):
-                continue
-            await self.hubspot.create_contact(properties, company_id)
-            created += 1
+            except ForagerError as exc:
+                if page != 1 or "400" not in str(exc):
+                    raise
+                logger.info(
+                    "Forager rejected role filter; retrying discovery without provider title filter"
+                )
+                provider_title_filter = False
+                results = await self.forager.search_people(
+                    company_name or company_domain,
+                    None,
+                    page=page,
+                    company_domain=company_domain,
+                )
+
+            if not results:
+                break
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                person = _as_dict(result.get("person", result))
+                if not _role_matches_any_title({**result, **person}, titles):
+                    continue
+                organization = _as_dict(person.get("organization")) or _as_dict(
+                    result.get("organization")
+                )
+                person_id = person.get("id") or result.get("person_id")
+                linkedin_url = _linkedin_url({}, person)
+                linkedin_identifier = _linkedin_identifier(linkedin_url)
+                identity = str(person_id or linkedin_identifier or _person_name(person) or "")
+                if not identity or identity in seen:
+                    continue
+                seen.add(identity)
+
+                employer_domain = _domain(_first(organization, "domain", "website"))
+                if employer_domain and employer_domain != company_domain:
+                    continue
+                employer_name = _first(organization, "name", "legal_name", "organization_name")
+                if company_name and employer_name and employer_name.casefold() != company_name.casefold():
+                    # Domain is the stronger identity; allow exact domain matches even
+                    # when Forager's display name differs slightly.
+                    if employer_domain != company_domain:
+                        continue
+
+                details: dict[str, Any] = {}
+                if person_id or linkedin_identifier:
+                    details = await self.forager.person_details(
+                        person_id=int(person_id) if person_id is not None else None,
+                        linkedin_identifier=linkedin_identifier,
+                    )
+                properties = self._discovered_contact_properties(
+                    details=details,
+                    person=person,
+                    organization=organization,
+                    fallback_title=title,
+                    company_name=company_name,
+                    linkedin_url=linkedin_url,
+                )
+                if not properties.get("firstname") and not properties.get("lastname"):
+                    continue
+                await self.hubspot.create_contact(properties, company_id)
+                created += 1
+                if created >= limit:
+                    break
             if created >= limit:
                 break
         return created
