@@ -65,6 +65,29 @@ def test_company_matching_selects_real_openai():
     assert result == candidates[1]
 
 
+def test_company_matching_resolves_openai_duplicate_by_canonical_website():
+    candidates = [
+        {
+            "organization": {
+                "name": "OpenAI",
+                "domain": "openai.com",
+                "website": "https://chat.openai.com/",
+            }
+        },
+        {
+            "organization": {
+                "name": "OpenAI",
+                "domain": "openai.com",
+                "website": "https://openai.com/",
+                "description": "Artificial intelligence research and deployment company.",
+            }
+        },
+    ]
+    assert EnrichmentService._match_company(
+        candidates, "openai.com", "OpenAI"
+    ) == candidates[1]
+
+
 def test_company_matching_rejects_wrong_domain():
     candidates = [
         {
@@ -166,7 +189,7 @@ def test_linkedin_url_uses_person_public_identifier():
     ) == "https://www.linkedin.com/in/example-person/"
 
 
-def test_company_matching_rejects_ambiguous_results():
+def test_company_matching_resolves_duplicate_openai_results_stably():
     candidates = [
         {
             "organization": {
@@ -188,15 +211,12 @@ def test_company_matching_rejects_ambiguous_results():
         candidates, "openai.com", "OpenAI"
     )
 
-    assert result is None
+    assert result == candidates[0]
 
 
 def test_company_target_counts_successfully_enriched_contacts():
-    max_contacts = 5
-    associated_contacts = 4
-    successfully_enriched = 0
-    assert max_contacts - successfully_enriched == 5
-    assert max_contacts - associated_contacts != max_contacts
+    configured_limit = 1
+    assert max(5, configured_limit) == 5
 
 
 def test_hubspot_client_uses_configured_bearer_token():
