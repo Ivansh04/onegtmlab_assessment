@@ -222,35 +222,35 @@ async def _queued_webhook(request: Request, route: str):
     }
 
 
-@app.post("/webhook", tags=["webhooks"])
-async def webhook(request: Request):
-    return await _queued_webhook(request, "all")
+# @app.post("/webhook", tags=["webhooks"])
+# async def webhook(request: Request):
+#     return await _queued_webhook(request, "all")
 
 
-@app.post("/webhook/company", tags=["webhooks"])
-async def company_webhook(request: Request):
-    return await _queued_webhook(request, "company")
+# @app.post("/webhook/company", tags=["webhooks"])
+# async def company_webhook(request: Request):
+#     return await _queued_webhook(request, "company")
 
 
-@app.post("/webhook/contact", tags=["webhooks"])
-async def contact_webhook(request: Request):
-    return await _queued_webhook(request, "contact")
+# @app.post("/webhook/contact", tags=["webhooks"])
+# async def contact_webhook(request: Request):
+#     return await _queued_webhook(request, "contact")
 
 
-@app.post("/enrich/company", tags=["enrichment"])
-async def manual_company(payload: dict[str, Any], request: Request):
-    verify_app_secret(request, settings)
-    company_id = payload.get("company_id")
-    if not company_id:
-        raise HTTPException(status_code=422, detail="company_id is required")
-    return (await app.state.enrichment.enrich_company(str(company_id))).model_dump()
+# @app.post("/enrich/company", tags=["enrichment"])
+# async def manual_company(payload: dict[str, Any], request: Request):
+#     verify_app_secret(request, settings)
+#     company_id = payload.get("company_id")
+#     if not company_id:
+#         raise HTTPException(status_code=422, detail="company_id is required")
+#     return (await app.state.enrichment.enrich_company(str(company_id))).model_dump()
 
 
-@app.post("/enrich/contact", tags=["enrichment"])
-async def manual_contact(payload: dict[str, Any], request: Request):
-    verify_app_secret(request, settings)
-    contact_id = payload.get("contact_id")
-    if not contact_id:
-        raise HTTPException(status_code=422, detail="contact_id is required")
-    await app.state.enrichment.enrich_contact(str(contact_id))
-    return {"contact_id": str(contact_id), "status": "enriched"}
+# @app.post("/enrich/contact", tags=["enrichment"])
+# async def manual_contact(payload: dict[str, Any], request: Request):
+#     verify_app_secret(request, settings)
+#     contact_id = payload.get("contact_id")
+#     if not contact_id:
+#         raise HTTPException(status_code=422, detail="contact_id is required")
+#     await app.state.enrichment.enrich_contact(str(contact_id))
+#     return {"contact_id": str(contact_id), "status": "enriched"}
